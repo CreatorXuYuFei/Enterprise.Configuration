@@ -8,26 +8,17 @@ namespace Enterprise.Configuration.Utils
     {
         public static readonly JsonSerializerOptions DefaultJsonOpts = new()
         {
-            // 原有配置
-            ReadCommentHandling = JsonCommentHandling.Skip,    // 跳过 JSON 注释
-            AllowTrailingCommas = true,                        // 允许 JSON 最后一个字段带尾逗号
-            PropertyNameCaseInsensitive = true,                // 实体属性名大小写不敏感
-            // 项目常用，按需开启
-            // DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull, // 序列化时忽略 null 字段
-            // WriteIndented = true,                                        // 格式化缩进输出（调试用，生产建议关闭）
-            // Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,        // 不转义中文/特殊字符
-
-            // ========== 核心：原生支持 字符串 <=> 数字（.NET6+ 专属） ==========
+            ReadCommentHandling = JsonCommentHandling.Skip,
+            AllowTrailingCommas = true,
+            PropertyNameCaseInsensitive = true,
             NumberHandling = JsonNumberHandling.AllowReadingFromString,
-
-            // ========== 转换器集合：补全 字符串 <=> 布尔 转换 ==========
             Converters =
             {
                 new JsonStringBoolConverter()
             },
         };
 
-
+        #region 【原有逻辑 无需修改】JSON 扁平化（JSON → 扁平键值对）
         public static void FlattenJson(JsonElement element, string prefix, ConcurrentDictionary<string, string?> target)
         {
             switch (element.ValueKind)
@@ -51,133 +42,187 @@ namespace Enterprise.Configuration.Utils
                     break;
             }
         }
+        #endregion
 
-        /// <summary>修复：路径清洗 + 不区分大小写匹配</summary>
+        #region 【重点改造】扁平键值对 → 重建标准 JSON（支持集合/嵌套集合）
+        /// <summary>
+        /// 根据配置分段路径 + 扁平配置数据，反向重建标准 JSON
+        /// 支持：对象、一维数组、对象集合、嵌套集合、多层数组
+        /// </summary>
         public static string RebuildJson(string sectionPath, Dictionary<string, string?> allData)
         {
-            // 1. 清洗路径：去除首尾冒号，容错用户传入不规范路径
             string cleanSection = sectionPath.Trim(':');
             if (string.IsNullOrEmpty(cleanSection))
                 return "{}";
 
-            // 2. 拼接匹配前缀，不区分大小写查找
             string matchPrefix = $"{cleanSection}:";
+            // 筛选当前分段下的所有子键（大小写不敏感）
             var sectionData = allData
                 .Where(kv => kv.Key.StartsWith(matchPrefix, StringComparison.OrdinalIgnoreCase))
                 .ToDictionary(
-                    kv => kv.Key[matchPrefix.Length..], // 截取前缀后的子Key
-                    kv => kv.Value
+                    kv => kv.Key[matchPrefix.Length..],
+                    kv => kv.Value,
+                    StringComparer.OrdinalIgnoreCase
                 );
 
-            // 无匹配数据直接返回空对象
+            // 无数据：默认返回空对象
             if (sectionData.Count == 0)
                 return "{}";
 
-            var root = new Dictionary<string, object?>();
-            foreach (var (key, value) in sectionData)
+            // 判定：当前节点 根类型 是【数组】还是【对象】
+            bool isRootArray = IsRootNodeArray(sectionData.Keys);
+
+            object rootNode;
+            if (isRootArray)
             {
-                BuildJsonTree(root, key.Split(':'), 0, value);
+                // 根节点 = 数组（对应 List<T> / T[]）
+                rootNode = new List<object?>();
+                foreach (var (key, value) in sectionData)
+                {
+                    var keys = key.Split(':', StringSplitOptions.RemoveEmptyEntries);
+                    BuildJsonTree((List<object?>)rootNode, keys, 0, value);
+                }
             }
-            return JsonSerializer.Serialize(root, DefaultJsonOpts);
+            else
+            {
+                // 根节点 = 对象（普通实体）
+                rootNode = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+                foreach (var (key, value) in sectionData)
+                {
+                    var keys = key.Split(':', StringSplitOptions.RemoveEmptyEntries);
+                    BuildJsonTree((Dictionary<string, object?>)rootNode, keys, 0, value);
+                }
+            }
+
+            return JsonSerializer.Serialize(rootNode, DefaultJsonOpts);
         }
 
+        /// <summary>
+        /// 判断当前分段的根节点是否为数组（首段全部是数字索引）
+        /// 规则：微软配置规范 数组格式 = 前缀:0、前缀:1、前缀:2...
+        /// </summary>
+        private static bool IsRootNodeArray(IEnumerable<string> keys)
+        {
+            foreach (var key in keys)
+            {
+                var firstSeg = key.Split(':', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
+                if (!int.TryParse(firstSeg, out _))
+                    return false;
+            }
+            return true;
+        }
+
+        #region 树形构建 - 对象节点（Dictionary）
+        /// <summary>
+        /// 构建对象节点树形结构（普通实体、对象下的子节点）
+        /// </summary>
         private static void BuildJsonTree(Dictionary<string, object?> node, string[] keys, int idx, string? value)
         {
             if (idx >= keys.Length) return;
-            var currentKey = keys[idx];
-            var nextIdx = idx + 1;
+            string currentKey = keys[idx];
+            int nextIdx = idx + 1;
 
+            // 到达最后一级 Key：直接赋值
             if (nextIdx >= keys.Length)
             {
                 node[currentKey] = value;
                 return;
             }
 
+            // 下一级是数字索引 → 子节点 = 数组
             if (int.TryParse(keys[nextIdx], out _))
             {
-                if (!node.TryGetValue(currentKey, out var arrObj) || arrObj is not List<object?> arr)
+                if (!node.TryGetValue(currentKey, out var childObj) || childObj is not List<object?> childArray)
                 {
-                    arr = [];
-                    node[currentKey] = arr;
+                    childArray = new List<object?>();
+                    node[currentKey] = childArray;
                 }
-                BuildJsonTree(arr, keys, nextIdx, value);
+                BuildJsonTree(childArray, keys, nextIdx, value);
             }
+            // 下一级是普通字符串 → 子节点 = 对象
             else
             {
-                if (!node.TryGetValue(currentKey, out var childObj) || childObj is not Dictionary<string, object?> child)
+                if (!node.TryGetValue(currentKey, out var childObj) || childObj is not Dictionary<string, object?> childObjDict)
                 {
-                    child = [];
-                    node[currentKey] = child;
+                    childObjDict = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+                    node[currentKey] = childObjDict;
                 }
-                BuildJsonTree(child, keys, nextIdx, value);
+                BuildJsonTree(childObjDict, keys, nextIdx, value);
             }
         }
+        #endregion
 
+        #region 树形构建 - 数组节点（List）【核心修复：支持数组套对象/数组/值】
+        /// <summary>
+        /// 构建数组节点树形结构（集合、数组、嵌套数组）
+        /// 修复：稀疏索引、数组内对象、多层数组嵌套
+        /// </summary>
         private static void BuildJsonTree(List<object?> arr, string[] keys, int idx, string? value)
         {
             if (idx >= keys.Length) return;
-            var currentKey = keys[idx];
-            var nextIdx = idx + 1;
-            var index = int.Parse(currentKey);
 
-            while (arr.Count <= index) arr.Add(null);
+            // 当前层级一定是数组索引（数字）
+            if (!int.TryParse(keys[idx], out int arrayIndex))
+                return;
 
+            int nextIdx = idx + 1;
+            // 补全稀疏索引（跳过的索引填充 null，保证数组下标连续）
+            while (arr.Count <= arrayIndex)
+                arr.Add(null);
+
+            // 数组最后一级：直接赋值
             if (nextIdx >= keys.Length)
             {
-                arr[index] = value;
+                arr[arrayIndex] = value;
                 return;
             }
 
-            if (int.TryParse(keys[nextIdx], out _))
+            string nextKey = keys[nextIdx];
+            // 下一级还是数字 → 当前数组元素 = 子数组
+            if (int.TryParse(nextKey, out _))
             {
-                if (arr[index] is not List<object?> subArr)
+                if (arr[arrayIndex] is not List<object?> subArray)
                 {
-                    subArr = [];
-                    arr[index] = subArr;
+                    subArray = new List<object?>();
+                    arr[arrayIndex] = subArray;
                 }
-                BuildJsonTree(subArr, keys, nextIdx, value);
+                BuildJsonTree(subArray, keys, nextIdx, value);
             }
+            // 下一级是字符串 → 当前数组元素 = 对象（最常用：对象集合）
             else
             {
-                if (arr[index] is not Dictionary<string, object?> subObj)
+                if (arr[arrayIndex] is not Dictionary<string, object?> subObj)
                 {
-                    subObj = [];
-                    arr[index] = subObj;
+                    subObj = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+                    arr[arrayIndex] = subObj;
                 }
                 BuildJsonTree(subObj, keys, nextIdx, value);
             }
         }
+        #endregion
+        #endregion
 
-        /// <summary>
-        /// 字符串 <=> 布尔 双向转换转换器
-        /// 支持："true"/"false" 字符串转 bool，bool 序列化为字符串
-        /// 忽略大小写："TRUE" / "False" 均可正常解析
-        /// </summary>
+        #region 【原有逻辑 无需修改】字符串 <=> 布尔 转换器
         public class JsonStringBoolConverter : JsonConverter<bool>
         {
             public override bool Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
             {
-                // 场景1：JSON 是布尔值，直接返回
                 if (reader.TokenType == JsonTokenType.True) return true;
                 if (reader.TokenType == JsonTokenType.False) return false;
 
-                // 场景2：JSON 是字符串，转布尔
                 if (reader.TokenType == JsonTokenType.String)
                 {
                     string str = reader.GetString()?.Trim() ?? string.Empty;
                     return str.Equals("true", StringComparison.OrdinalIgnoreCase);
                 }
-
-                // 非法类型，抛出标准 Json 异常
                 throw new JsonException($"无法将 {reader.TokenType} 转换为布尔值");
             }
 
             public override void Write(Utf8JsonWriter writer, bool value, JsonSerializerOptions options)
             {
-                // 序列化时：bool → 字符串（如需保留原生布尔，改为 writer.WriteBooleanValue(value)）
                 writer.WriteStringValue(value.ToString().ToLower());
             }
         }
-
+        #endregion
     }
 }

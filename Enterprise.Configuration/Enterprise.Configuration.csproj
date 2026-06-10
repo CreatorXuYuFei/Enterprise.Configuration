@@ -5,7 +5,7 @@
 	 
     <!-- ========== NuGet 包核心元数据 ========== -->
     <PackageId>Enterprise.Configuration</PackageId>       <!-- 包唯一ID（NuGet 检索名称，全局唯一） -->
-    <Version>2.1.0</Version>                   <!-- 包版本号（语义化版本：主.次.修订） -->
+    <Version>2.1.1</Version>                   <!-- 包版本号（语义化版本：主.次.修订） -->
     <Authors>XuF</Authors>                    <!-- 作者 -->
     <Company>富沛和科技有限公司</Company>
     <Description>.NET8 通用Config配置管理工具类库</Description> <!-- 包描述 -->

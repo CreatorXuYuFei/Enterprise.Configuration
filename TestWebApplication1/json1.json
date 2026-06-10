@@ -6,7 +6,7 @@
       "Timeout": 30
     }
   ],
-  "Db":{
+  "Db": {
     "MaxPool": "20"
   }
 }

@@ -1,10 +1,10 @@
 ﻿using Enterprise.Configuration.Abstractions;
 using Enterprise.Configuration.Core;
-using Microsoft.Extensions.DependencyInjection;
-using System.ComponentModel.DataAnnotations;
-using static Enterprise.Configuration.Abstractions.OptionsInterfaces;
 using Enterprise.Configuration.Extensions;
 using Enterprise.Configuration.DI;
+using static Enterprise.Configuration.Abstractions.OptionsInterfaces;
+using Microsoft.Extensions.DependencyInjection;
+using System.ComponentModel.DataAnnotations;
 
 namespace TestConsoleApp1
 {
@@ -33,7 +33,7 @@ namespace TestConsoleApp1
             // 3. DI 注册
             var services = new ServiceCollection();
             services.AddEnterpriseConfig(config);
-            services.Configure<AiAgentOptions>("AiAgent");
+            services.Configure<List<AiAgentOptions>>("AiAgent");
             var provider = services.BuildServiceProvider();
 
             // 4. 取值测试
@@ -42,8 +42,8 @@ namespace TestConsoleApp1
             Console.WriteLine($"数据库连接池：{config["Db:MaxPool"]}");
 
             // 5. 读取实体配置
-            var aiOpts = provider.GetRequiredService<IOptions<AiAgentOptions>>().Value;
-            Console.WriteLine($"AI端点：{aiOpts.Endpoint}");
+            var aiOpts = provider.GetRequiredService<IOptions<List<AiAgentOptions>>>().Value;
+            Console.WriteLine($"AI端点：{aiOpts[0].Endpoint}");
 
             Console.ReadLine();
         }

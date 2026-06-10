@@ -33,11 +33,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Compile Update="README.cs">
-      <DesignTime>True</DesignTime>
-      <AutoGen>True</AutoGen>
-      <DependentUpon>README.txt</DependentUpon>
-    </Compile>
     <Compile Update="TextTemplate1.cs">
       <DesignTime>True</DesignTime>
       <AutoGen>True</AutoGen>
